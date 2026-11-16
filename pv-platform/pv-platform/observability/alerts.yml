@@ -1,0 +1,31 @@
+groups:
+- name: pv-slo
+  rules:
+  - alert: PVIntakeLatencyHigh
+    expr: histogram_quantile(0.95, sum by (le)(rate(pv_http_request_seconds_bucket{route="/v1/reports"}[5m]))) > 0.3
+    for: 5m
+    annotations: {summary: "Intake p95 > 300 ms (SLO 2)", runbook: "docs/RUNBOOK.md#high-intake-latency"}
+  - alert: PVE2ELatencyHigh
+    expr: histogram_quantile(0.95, sum by (le)(rate(pv_job_e2e_seconds_bucket[5m]))) > 10
+    for: 5m
+    annotations: {summary: "Triage end-to-end p95 > 10 s (SLO 3)", runbook: "docs/RUNBOOK.md#slow-triage--queue-backlog"}
+  - alert: PVErrorRateHigh
+    expr: sum(rate(pv_http_requests_total{route="/v1/reports",status=~"5.."}[5m])) / sum(rate(pv_http_requests_total{route="/v1/reports"}[5m])) > 0.01
+    for: 5m
+    annotations: {summary: "Intake 5xx > 1% (SLO 1)", runbook: "docs/RUNBOOK.md#5xx-on-intake"}
+  - alert: PVBreakerOpen
+    expr: max(pv_llm_breaker_state) == 2
+    for: 1m
+    annotations: {summary: "LLM circuit breaker open, running on fallback", runbook: "docs/RUNBOOK.md#llm-breaker-open--fallback-rate-high"}
+  - alert: PVFallbackRateHigh
+    expr: sum(rate(pv_triage_source_total{source="fallback"}[5m])) / sum(rate(pv_triage_source_total[5m])) > 0.2
+    for: 5m
+    annotations: {summary: "More than 20% of triage is fallback", runbook: "docs/RUNBOOK.md#llm-breaker-open--fallback-rate-high"}
+  - alert: PVQueueBacklog
+    expr: max(pv_queue_depth) > 200
+    for: 2m
+    annotations: {summary: "Queue depth > 200 for 2 min", runbook: "docs/RUNBOOK.md#slow-triage--queue-backlog"}
+  - alert: PVQuarantineSpike
+    expr: sum(rate(pv_reports_total{result="quarantined"}[5m])) / sum(rate(pv_reports_total[5m])) > 0.2
+    for: 5m
+    annotations: {summary: "More than 20% of reports quarantined", runbook: "docs/RUNBOOK.md#quarantine-spike"}

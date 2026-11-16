@@ -1,0 +1,70 @@
+# docker compose up -d --build            -> everything
+# docker compose up -d --scale worker=4   -> scaling experiment
+x-app: &app
+  build: .
+  environment: &env
+    REDIS_URL: redis://redis:6379/0
+    LLM_BASE_URL: http://llm-stub:9000
+    OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+    LLM_TIMEOUT_S: "3"
+    LLM_MAX_RETRIES: "2"
+    BREAKER_FAILURE_THRESHOLD: "5"
+    BREAKER_RECOVERY_S: "15"
+    RATE_LIMIT_PER_MIN: "${RATE_LIMIT_PER_MIN:-120}"
+    WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-4}"
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 3s, timeout: 2s, retries: 10}
+
+  llm-stub:
+    <<: *app
+    command: uvicorn pv.stub_app:app --host 0.0.0.0 --port 9000
+    ports: ["9000:9000"]
+
+  api:
+    <<: *app
+    command: uvicorn pv.api:app --host 0.0.0.0 --port 8000 --workers 1   # 1 proc: keeps /metrics correct
+    ports: ["8000:8000"]
+    depends_on: {redis: {condition: service_healthy}, llm-stub: {condition: service_started}}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/readyz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *app
+    command: python -m pv.worker
+    depends_on: {redis: {condition: service_healthy}}
+    # no container_name / host ports, so --scale works; Prometheus finds replicas via DNS
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment: {COLLECTOR_OTLP_ENABLED: "true"}
+    ports: ["16686:16686"]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  redis-data:
